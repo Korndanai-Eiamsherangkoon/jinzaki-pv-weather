@@ -1,0 +1,32 @@
+# Download PVGIS TMY for every tambon of Thailand + every Bangkok khet (pv-presets.mjs) and commit the files here.
+# Free (public repo: GitHub Actions minutes are free). Points already saved are skipped, so a second run only fills gaps.
+# Actions › Weather presets › Run workflow. After it, run "PV weather presets index" in jinzaki-office.
+name: Weather presets
+on:
+  workflow_dispatch:
+    inputs:
+      provinces: { description: 'Only these provinces (ISO codes like TH-10,TH-20); empty = all', required: false, default: '' }
+      limit: { description: 'At most this many new points (empty = all)', required: false, default: '' }
+permissions: { contents: write }
+concurrency: { group: presets, cancel-in-progress: false }
+jobs:
+  presets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: sudo apt-get install -y -qq osmium-tool >/dev/null && ./extract.sh
+      - run: node pv-presets.mjs
+        env:
+          PRESET_PROVINCES: ${{ inputs.provinces }}
+          PRESET_LIMIT: ${{ inputs.limit }}
+          PRESET_MINUTES: '300'
+      - name: Commit
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add preset index.json
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -q -m "Presets: $(ls preset | wc -l) points" && git push
