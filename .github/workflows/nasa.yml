@@ -1,0 +1,32 @@
+# NASA POWER hourly presets: one file per NASA grid cell with a tambon, for 2023-2025 (pv-presets-nasa.mjs). Free; the NASA API is
+# asked gently (2 at a time, 1.5 s apart). Saved points are skipped, so a second run only fills gaps.
+# Actions › NASA POWER presets › Run workflow. After it, run "PV weather presets index" in jinzaki-office.
+name: NASA POWER presets
+on:
+  workflow_dispatch:
+    inputs:
+      years: { description: 'Years, comma separated', required: false, default: '2023,2024,2025' }
+      limit: { description: 'At most this many new files (empty = all)', required: false, default: '' }
+permissions: { contents: write }
+concurrency: { group: presets, cancel-in-progress: false }
+jobs:
+  nasa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: curl -sSfL --retry 3 -o /tmp/tambon.csv "https://raw.githubusercontent.com/prasertcbs/thailand_gis/main/tambon%20lat%20lon/tambon%20lat%20lon%20location.csv"
+      - run: node pv-presets-nasa.mjs
+        env:
+          PRESET_YEARS: ${{ inputs.years }}
+          PRESET_LIMIT: ${{ inputs.limit }}
+          PRESET_MINUTES: '300'
+      - name: Commit
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          [ -f index.json ] || { echo "no index yet"; exit 0; }; git add preset index.json
+          git diff --cached --quiet && { echo "nothing new"; exit 0; }
+          git commit -q -m "NASA POWER presets: $(ls preset | wc -l) files" && git pull -q --rebase && git push

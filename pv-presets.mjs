@@ -60,7 +60,7 @@ index.about = 'PVGIS 5.3 TMY (EU JRC, free) for a point inside every tambon of T
 const have = new Set(Object.keys(index.points).filter((k) => existsSync(`${OUT}/preset/${k}.json.gz`)));
 for (const j of jobs) if (have.has(j.key)) index.points[j.key].places = j.places.map((p) => placeMeta(p));   // names may change on the map
 jobs = jobs.filter((j) => !have.has(j.key));
-if (!ONLY.length) for (const k of Object.keys(index.points)) if (!byKey.has(k)) { delete index.points[k]; try { unlinkSync(`${OUT}/preset/${k}.json.gz`); } catch {} console.log('  removed old point', k); }
+if (!ONLY.length) for (const k of Object.keys(index.points)) if (!index.points[k].provider && !byKey.has(k)) { delete index.points[k]; try { unlinkSync(`${OUT}/preset/${k}.json.gz`); } catch {} console.log('  removed old point', k); }
 console.log('already saved:', have.size, '· to download:', jobs.length);
 jobs = jobs.slice(0, LIMIT);
 
