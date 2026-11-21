@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: sudo apt-get install -y -qq osmium-tool >/dev/null && bash extract.sh
+      - run: curl -sSfL --retry 3 -o /tmp/tambon.csv "https://raw.githubusercontent.com/prasertcbs/thailand_gis/main/tambon%20lat%20lon/tambon%20lat%20lon%20location.csv" && wc -l /tmp/tambon.csv
       - run: node pv-presets.mjs
         env:
           PRESET_PROVINCES: ${{ inputs.provinces }}

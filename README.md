@@ -7,5 +7,5 @@ Bangkok, ready for PV Simulation Studio in Jinzaki Office.
 - `preset/<key>.json.gz`: the hourly year, compact (`jz: 1`: whole numbers, temperature and wind ×10, times as a pattern).
 - Made by `pv-presets.mjs` (Actions › Weather presets). Points already here are skipped on the next run.
 
-Sources: PVGIS © European Union, JRC (free, see https://joint-research-centre.ec.europa.eu/pvgis). Places and boundaries
-© OpenStreetMap contributors (ODbL).
+Sources: PVGIS © European Union, JRC (free, see https://joint-research-centre.ec.europa.eu/pvgis). Tambon list and points: OCHA
+COD-AB Thailand (HDX, CC BY-IGO), via https://github.com/prasertcbs/thailand_gis.

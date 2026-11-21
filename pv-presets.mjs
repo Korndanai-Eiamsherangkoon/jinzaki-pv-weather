@@ -1,16 +1,15 @@
 // PV Simulation Studio weather presets (owner 2026-11-21: "a sunlight preset for every tambon in Thailand and every
 // Bangkok khet; keep them in a GitHub repo"). Lives in the PUBLIC repo jinzaki-pv-weather (data only, no secrets):
-// PVGIS 5.3 TMY for a point inside every ตำบล (OSM admin_level 8) and every เขต of Bangkok (admin_level 6 in TH-10).
-// Free: Geofabrik + osmium for the places, PVGIS (no key), GitHub for the files, jsDelivr CDN for the browser.
+// PVGIS 5.3 TMY for the point of every ตำบล (OCHA COD-AB list with lat/lon, 7,425) and every เขต of Bangkok.
+// Free: the tambon list from GitHub (prasertcbs/thailand_gis), PVGIS (no key), GitHub for the files and the browser link.
 // Files are compact (`jz: 1`, ints, ~35 KB instead of ~190 KB raw JSON); jinzaki-office src/studio/client.js turns them
 // back into the PVGIS answer before the engine reads it. index.json lists every point (key = the same key the pv-weather
 // edge function uses), and jinzaki-office tools/pv-presets-index.mjs copies it into the pv_weather table.
-//   ./extract.sh                                   → /tmp/admin.geojsonseq (boundaries only)
+//   the workflow downloads the tambon list to /tmp/tambon.csv (PRESET_CSV)
 //   node pv-presets.mjs                            → download what is missing into preset/ + index.json (this repo)
 //   PRESET_PROVINCES="TH-10,TH-21" PRESET_LIMIT=20 PVGIS_URL=… (tests) · PRESET_MINUTES=300 stop time · PRESET_CONC=4
 //   PRESET_DIR=. (where preset/ and index.json go)
-import { mkdirSync, writeFileSync, readFileSync, existsSync, createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 
@@ -19,7 +18,7 @@ const ONLY = (process.env.PRESET_PROVINCES || '').split(',').map((s) => s.trim()
 const LIMIT = Number(process.env.PRESET_LIMIT) || Infinity;
 const MINUTES = Number(process.env.PRESET_MINUTES) || 300;
 const CONC = Math.max(1, Math.min(8, Number(process.env.PRESET_CONC) || 4));
-const SRC = process.env.PRESET_GEOJSONSEQ || '/tmp/admin.geojsonseq';
+const SRC = process.env.PRESET_CSV || '/tmp/tambon.csv';
 const PVGIS = process.env.PVGIS_URL || 'https://re.jrc.ec.europa.eu/api/v5_3/';
 const DATA_VERSION = '1', VARS = 'G(h),Gb(n),Gd(h),T2m,WS10m'; // = supabase/functions/pv-weather (pvgis_tmy, no year range)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -28,53 +27,21 @@ const t0 = Date.now();
 // same key as the edge function: sha256(provider|dataset|lat|lon|year|variables|version), first 32 hex
 const keyOf = (lat, lon) => createHash('sha256').update(['pvgis_tmy', 'tmy', lat.toFixed(3), lon.toFixed(3), '', VARS, DATA_VERSION].join('|')).digest('hex').slice(0, 32);
 
-// ---------- places: tambon + Bangkok khet, each with a point inside it ----------
-const rings = (g) => (g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : []);
-const bboxOf = (polys) => { let b = [180, 90, -180, -90]; for (const poly of polys) for (const [x, y] of poly[0]) { b = [Math.min(b[0], x), Math.min(b[1], y), Math.max(b[2], x), Math.max(b[3], y)]; } return b; };
-const inRing = (x, y, r) => { let inside = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const [xi, yi] = r[i], [xj, yj] = r[j]; if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside; } return inside; };
-const inPolys = (x, y, polys) => polys.some((poly) => inRing(x, y, poly[0]) && !poly.slice(1).some((h) => inRing(x, y, h)));
-const inArea = (x, y, a) => x >= a.bbox[0] && x <= a.bbox[2] && y >= a.bbox[1] && y <= a.bbox[3] && inPolys(x, y, a.polys);
-const ringArea = (r) => { let s = 0; for (let i = 0, j = r.length - 1; i < r.length; j = i++) s += r[j][0] * r[i][1] - r[i][0] * r[j][1]; return s / 2; };
-// area-weighted centre of the biggest part; if that falls outside (a crescent-shaped tambon), the inside grid point nearest to it
-function inside(polys) {
-  const big = polys.reduce((a, p) => (Math.abs(ringArea(p[0])) > Math.abs(ringArea(a[0])) ? p : a), polys[0]);
-  const r = big[0]; let A = 0, cx = 0, cy = 0;
-  for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const f = r[j][0] * r[i][1] - r[i][0] * r[j][1]; A += f; cx += (r[j][0] + r[i][0]) * f; cy += (r[j][1] + r[i][1]) * f; }
-  if (A) { cx /= 3 * A; cy /= 3 * A; } else { cx = r[0][0]; cy = r[0][1]; }
-  if (inPolys(cx, cy, [big])) return [cx, cy];
-  const b = bboxOf([big]); let best = null, bd = Infinity;
-  for (let i = 1; i < 40; i++) for (let j = 1; j < 40; j++) {
-    const x = b[0] + (b[2] - b[0]) * i / 40, y = b[1] + (b[3] - b[1]) * j / 40;
-    if (!inPolys(x, y, [big])) continue; const d = (x - cx) ** 2 + (y - cy) ** 2; if (d < bd) { bd = d; best = [x, y]; }
-  }
-  return best || r[0];
-}
-const strip = (s, re) => String(s || '').trim().replace(re, '').trim();
-
-const provs = [], dists = [], tambons = [];
-for await (const line of createInterface({ input: createReadStream(SRC, 'utf8'), crlfDelay: Infinity })) {
-  const l = line.replace(/^\x1e/, '').trim(); if (!l) continue;
-  const f = JSON.parse(l); const t = f.properties || {}; if (!f.geometry || t.boundary !== 'administrative') continue;
-  const polys = rings(f.geometry); if (!polys.length) continue;
-  const a = { polys, bbox: bboxOf(polys), th: (t['name:th'] || t.name || '').trim(), en: (t['name:en'] || '').trim() || null, osm: String(f.id || '') };
-  if (t.admin_level === '4' && /^TH-/.test(t['ISO3166-2'] || '')) provs.push({ ...a, iso: t['ISO3166-2'], th: strip(a.th, /^จังหวัด\s*/) });
-  else if (t.admin_level === '6') dists.push({ ...a, th: strip(a.th, /^(อำเภอ|เขต|กิ่งอำเภอ)\s*/), khet: /^เขต/.test(a.th) });
-  else if (t.admin_level === '8') tambons.push({ ...a, th: strip(a.th, /^(ตำบล|แขวง)\s*/) });
-}
-console.log('read', SRC, '· provinces', provs.length, '· districts', dists.length, '· tambon/khwaeng', tambons.length, '·', Math.round((Date.now() - t0) / 1000) + 's');
-if (!ONLY.length && provs.length < 70) throw new Error('Only ' + provs.length + ' provinces in the extract; stopping');
-const provOf = (x, y) => provs.find((p) => inArea(x, y, p));
+// ---------- places: every tambon (7,425, OCHA COD-AB via prasertcbs/thailand_gis, one point per tambon) + Bangkok khet ----------
+// OpenStreetMap was tried first (2026-11-21): only 854 tambon boundaries are mapped there, so the official list is used.
+const csv = (t) => { const [h, ...rows] = t.trim().split(/\r?\n/); const k = h.split(','); return rows.map((l) => { const v = l.split(','); return Object.fromEntries(k.map((x, i) => [x, v[i]])); }); };
+const all = csv(readFileSync(SRC, 'utf8')).filter((r) => r.ADM3_PCODE && Number.isFinite(Number(r.lat)) && Number.isFinite(Number(r.lon)));
+console.log('read', SRC, '· tambon/khwaeng', all.length);
+if (!ONLY.length && all.length < 7000) throw new Error('Only ' + all.length + ' tambons in the list; stopping');
+const iso = (pc) => 'TH-' + pc.slice(2, 4);
+const clean = (s, re) => String(s || '').trim().replace(re, '').trim();
 const points = [];
-for (const d of dists) {        // Bangkok: one preset per เขต (khwaeng are left out: the owner asked for khet)
-  const [x, y] = inside(d.polys); const p = provOf(x, y);
-  if (p?.iso === 'TH-10') points.push({ level: 'khet', name_th: d.th, name_en: d.en, district_th: d.th, province_th: p.th, iso: p.iso, osm: d.osm, lon: x, lat: y });
+const khet = new Map();      // Bangkok: one preset per เขต = the middle of its khwaeng points (khwaeng left out: the owner asked for khet)
+for (const r of all) {
+  if (r.ADM1_PCODE === 'TH10') { const k = khet.get(r.ADM2_PCODE) || { r, lat: 0, lon: 0, n: 0 }; k.lat += Number(r.lat); k.lon += Number(r.lon); k.n++; khet.set(r.ADM2_PCODE, k); continue; }
+  points.push({ level: 'tambon', name_th: clean(r.ADM3_TH, /^(ตำบล|แขวง)\s*/), name_en: r.ADM3_EN, district_th: clean(r.ADM2_TH, /^(อำเภอ|เขต)\s*/), province_th: clean(r.ADM1_TH, /^จังหวัด\s*/), iso: iso(r.ADM1_PCODE), osm: r.ADM3_PCODE, lat: Number(r.lat), lon: Number(r.lon) });
 }
-for (const t of tambons) {
-  const [x, y] = inside(t.polys); const p = provOf(x, y);
-  if (!p || p.iso === 'TH-10') continue;                       // outside Thailand, or a Bangkok khwaeng
-  const d = dists.find((a) => inArea(x, y, a));
-  points.push({ level: 'tambon', name_th: t.th, name_en: t.en, district_th: d?.th || null, province_th: p.th, iso: p.iso, osm: t.osm, lon: x, lat: y });
-}
+for (const [pc, k] of khet) points.push({ level: 'khet', name_th: clean(k.r.ADM2_TH, /^เขต\s*/), name_en: k.r.ADM2_EN, district_th: clean(k.r.ADM2_TH, /^เขต\s*/), province_th: 'กรุงเทพมหานคร', iso: 'TH-10', osm: pc, lat: k.lat / k.n, lon: k.lon / k.n });
 let todo = points.filter((p) => !ONLY.length || ONLY.includes(p.iso)).sort((a, b) => a.iso.localeCompare(b.iso) || String(a.district_th).localeCompare(String(b.district_th), 'th') || a.name_th.localeCompare(b.name_th, 'th'));
 for (const p of todo) { p.lat = Math.round(p.lat * 1000) / 1000; p.lon = Math.round(p.lon * 1000) / 1000; p.key = keyOf(p.lat, p.lon); }
 console.log('points:', todo.length, '(khet', todo.filter((p) => p.level === 'khet').length + ')');
@@ -89,10 +56,11 @@ let jobs = [...byKey.values()];
 mkdirSync(OUT + '/preset', { recursive: true });
 const INDEX = OUT + '/index.json';
 const index = existsSync(INDEX) ? JSON.parse(readFileSync(INDEX, 'utf8')) : { about: '', points: {} };
-index.about = 'PVGIS 5.3 TMY (EU JRC, free) for a point inside every tambon of Thailand and every Bangkok khet. Places © OpenStreetMap contributors (ODbL). Files: preset/<key>.json.gz, compact format jz:1. Made by tools of Jinzaki Office PV Simulation Studio.';
+index.about = 'PVGIS 5.3 TMY (EU JRC, free) for a point inside every tambon of Thailand and every Bangkok khet. Tambon list: OCHA COD-AB Thailand (HDX, CC BY-IGO) via github.com/prasertcbs/thailand_gis. Files: preset/<key>.json.gz, compact format jz:1. Made by tools of Jinzaki Office PV Simulation Studio.';
 const have = new Set(Object.keys(index.points).filter((k) => existsSync(`${OUT}/preset/${k}.json.gz`)));
 for (const j of jobs) if (have.has(j.key)) index.points[j.key].places = j.places.map((p) => placeMeta(p));   // names may change on the map
 jobs = jobs.filter((j) => !have.has(j.key));
+if (!ONLY.length) for (const k of Object.keys(index.points)) if (!byKey.has(k)) { delete index.points[k]; try { unlinkSync(`${OUT}/preset/${k}.json.gz`); } catch {} console.log('  removed old point', k); }
 console.log('already saved:', have.size, '· to download:', jobs.length);
 jobs = jobs.slice(0, LIMIT);
 
